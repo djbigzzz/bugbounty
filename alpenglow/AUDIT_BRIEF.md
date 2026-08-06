@@ -74,3 +74,11 @@ Not a lint. We want a violated **invariant**, e.g.:
 - Reward certificates crediting stake that did not vote (loss of funds)
 - A state machine that can wedge permanently (no cert can ever form)
 - Unauthenticated remote input causing panic/unbounded allocation on the Alpenglow path
+
+## Portal facts (from the live submission page, alpenglow.anza.xyz)
+- Sign in with GitHub (binds credit to your account; no scopes requested, only public identity).
+- Submissions are filed as **draft GitHub Security Advisories on `anza-xyz/alpenglow`**, one finding per advisory.
+- Flow steps: (1) Sign in → (2) Terms & conditions → (3) Vulnerability details → (4) Affected component → (5) Payment & submit.
+- The 0.5 SOL burn is non-refundable. **Do not refresh the page after burning** — the session reference must match.
+- Summary field cap: **1,024 characters** ("one or two sentences: what breaks and why it matters"). Description fields accept Markdown with a Preview tab.
+- Submissions with multiple findings are closed — split into separate advisories.
